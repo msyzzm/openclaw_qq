@@ -12,10 +12,7 @@ import {
     type ChannelAccountSnapshot,
     type ChannelSetupInput,
     type OpenClawConfig,
-    buildChannelConfigSchema,
     type ReplyPayload,
-    applyAccountNameToChannelSection,
-    migrateBaseNameToDefaultAccount,
 } from "openclaw/plugin-sdk";
 import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "openclaw/plugin-sdk/account-id";
 import { OneBotClient } from "./client.js";
@@ -25,6 +22,22 @@ import { getQQRuntime } from "./runtime.js";
 import type { OneBotMessage, OneBotMessageSegment } from "./types.js";
 
 type AnyQQClient = OneBotClient | MilkyClient;
+
+function applyAccountNameToChannelSection({ cfg, channelKey, accountId, name }: { cfg: any; channelKey: string; accountId: string; name: string }): any {
+    const channel = cfg.channels?.[channelKey] ?? {};
+    if (accountId === DEFAULT_ACCOUNT_ID) {
+        return { ...cfg, channels: { ...cfg.channels, [channelKey]: { ...channel, name } } };
+    }
+    const accounts = channel.accounts ?? {};
+    return { ...cfg, channels: { ...cfg.channels, [channelKey]: { ...channel, accounts: { ...accounts, [accountId]: { ...accounts[accountId], name } } } } };
+}
+
+function migrateBaseNameToDefaultAccount({ cfg, channelKey }: { cfg: any; channelKey: string }): any {
+    const channel = cfg.channels?.[channelKey];
+    if (!channel?.name) return cfg;
+    const { name, ...rest } = channel;
+    return { ...cfg, channels: { ...cfg.channels, [channelKey]: { ...rest, accounts: { ...rest.accounts, [DEFAULT_ACCOUNT_ID]: { ...rest.accounts?.[DEFAULT_ACCOUNT_ID], name } } } } };
+}
 
 export type ResolvedQQAccount = ChannelAccountSnapshot & {
     config: QQConfig;
@@ -2944,7 +2957,7 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
         deleteMessage: true,
     },
     configSchema: (() => {
-        const baseSchema = buildChannelConfigSchema(QQConfigSchema) as any;
+        const baseSchema = { schema: QQConfigSchema } as any;
         return {
             ...baseSchema,
             uiHints: {

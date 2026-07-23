@@ -13,7 +13,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "openclaw": "*",
+    "openclaw": "2026.7.1-2",
     "typescript": "^5.9.3"
   }
 }
