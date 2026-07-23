@@ -341,6 +341,33 @@ export class MilkyClient extends EventEmitter {
       }));
       return this.apiCall("send_group_message", { group_id: params["group_id"], message: [{ type: "forward", data: { messages } }] }, timeoutMs);
     }
+    if (action === "upload_group_file") {
+      return this.apiCall("upload_group_file", {
+        group_id: params["group_id"],
+        file_uri: params["file"],
+        file_name: params["name"],
+        parent_folder_id: "/",
+      }, timeoutMs);
+    }
+    if (action === "upload_private_file") {
+      return this.apiCall("upload_private_file", {
+        user_id: params["user_id"],
+        file_uri: params["file"],
+        file_name: params["name"],
+      }, timeoutMs);
+    }
+    if (action === "get_group_file_url") {
+      return this.apiCall("get_group_file_download_url", {
+        group_id: params["group_id"],
+        file_id: params["file_id"],
+      }, timeoutMs);
+    }
+    if (action === "get_private_file_url") {
+      return this.apiCall("get_private_file_download_url", {
+        user_id: params["user_id"],
+        file_id: params["file_id"],
+      }, timeoutMs);
+    }
     return this.apiCall(action, params, timeoutMs);
   }
 
