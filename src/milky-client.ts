@@ -276,11 +276,11 @@ export class MilkyClient extends EventEmitter {
       case "reply":
         return { type: "reply", data: { message_seq: parseInt(seg.data.id, 10) } };
       case "image":
-        return { type: "image", data: { uri: seg.data.file } };
+        return { type: "image", data: { uri: seg.data.file, summary: "[图片]" } };
       case "record":
-        return { type: "record", data: { uri: seg.data.file } };
+        return { type: "record", data: { uri: seg.data.file, summary: "[语音]" } };
       case "video":
-        return { type: "video", data: { uri: seg.data.file } };
+        return { type: "video", data: { uri: seg.data.file, summary: "[视频]" } };
       default:
         return null;
     }
@@ -308,13 +308,13 @@ export class MilkyClient extends EventEmitter {
           else if (params["qq"]) segments.push({ type: "mention", data: { user_id: parseInt(params["qq"], 10) } });
           break;
         case "image":
-          if (params["file"]) segments.push({ type: "image", data: { uri: params["file"] } });
+          if (params["file"]) segments.push({ type: "image", data: { uri: params["file"], summary: "[图片]" } });
           break;
         case "record":
-          if (params["file"]) segments.push({ type: "record", data: { uri: params["file"] } });
+          if (params["file"]) segments.push({ type: "record", data: { uri: params["file"], summary: "[语音]" } });
           break;
         case "video":
-          if (params["file"]) segments.push({ type: "video", data: { uri: params["file"] } });
+          if (params["file"]) segments.push({ type: "video", data: { uri: params["file"], summary: "[视频]" } });
           break;
       }
       lastIndex = match.index + match[0].length;
