@@ -19,13 +19,16 @@ import {
 } from "openclaw/plugin-sdk";
 import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "openclaw/plugin-sdk/account-id";
 import { OneBotClient } from "./client.js";
+import { MilkyClient } from "./milky-client.js";
 import { QQConfigSchema, type QQConfig } from "./config.js";
 import { getQQRuntime } from "./runtime.js";
 import type { OneBotMessage, OneBotMessageSegment } from "./types.js";
 
+type AnyQQClient = OneBotClient | MilkyClient;
+
 export type ResolvedQQAccount = ChannelAccountSnapshot & {
     config: QQConfig;
-    client?: OneBotClient;
+    client?: AnyQQClient;
 };
 
 interface PendingQQMsg {
@@ -774,7 +777,7 @@ function unwrapOneBotActionData(info: any): any {
 }
 
 async function resolveOneBotFileUrl(
-    client: OneBotClient,
+    client: AnyQQClient,
     segment: any,
     opts?: { groupId?: number; userId?: number }
 ): Promise<string | undefined> {
@@ -827,7 +830,7 @@ async function resolveOneBotFileUrl(
     return existing;
 }
 
-async function resolveOneBotImageUrl(client: OneBotClient, segment: any): Promise<string | undefined> {
+async function resolveOneBotImageUrl(client: AnyQQClient, segment: any): Promise<string | undefined> {
     if (!segment || String(segment?.type || "").toLowerCase() !== "image") return undefined;
 
     const directUrl = normalizeOneBotMediaUrlCandidate(segment?.data?.url)
@@ -855,7 +858,7 @@ async function resolveOneBotImageUrl(client: OneBotClient, segment: any): Promis
 }
 
 async function hydrateOneBotMessageMedia(
-    client: OneBotClient,
+    client: AnyQQClient,
     message: OneBotMessage | string | undefined,
     opts?: { groupId?: number; userId?: number }
 ): Promise<void> {
@@ -880,7 +883,7 @@ async function hydrateOneBotMessageMedia(
 }
 
 async function collectFileHintFromOneBotSegment(
-    client: OneBotClient,
+    client: AnyQQClient,
     segment: any,
     opts?: { groupId?: number; userId?: number }
 ): Promise<QQInboundAttachmentHint | null> {
@@ -1359,7 +1362,7 @@ function summarizeOneBotSegments(message: OneBotMessage | string | undefined, ma
 }
 
 async function buildReplyForwardContextBlock(opts: {
-    client: OneBotClient;
+    client: AnyQQClient;
     rootEvent: any;
     repliedMsg: any;
     cfg: QQConfig;
@@ -1547,8 +1550,8 @@ async function resetSessionByKey(storePath: string, sessionKey: string): Promise
     }
 }
 
-const clients = new Map<string, OneBotClient>();
-const allClientsByAccount = new Map<string, Set<OneBotClient>>();
+const clients = new Map<string, AnyQQClient>();
+const allClientsByAccount = new Map<string, Set<AnyQQClient>>();
 const accountConfigs = new Map<string, QQConfig>();
 const blockedNotifyCache = new Map<string, number>();
 const activeTaskIds = new Set<string>();
@@ -2108,7 +2111,7 @@ async function setTempSessionSlot(threadKey: string, slot: string | null): Promi
     await persistTempSessionSlots();
 }
 
-async function setGroupTypingCard(client: OneBotClient, accountId: string, groupId: number, busySuffix: string): Promise<void> {
+async function setGroupTypingCard(client: AnyQQClient, accountId: string, groupId: number, busySuffix: string): Promise<void> {
     const selfId = client.getSelfId();
     if (!selfId) return;
     const groupKey = `${accountId}:group:${groupId}`;
@@ -2132,7 +2135,7 @@ async function setGroupTypingCard(client: OneBotClient, accountId: string, group
     }
 }
 
-async function activateGroupTypingIndicator(client: OneBotClient, accountId: string, groupId: number, busySuffix: string): Promise<boolean> {
+async function activateGroupTypingIndicator(client: AnyQQClient, accountId: string, groupId: number, busySuffix: string): Promise<boolean> {
     const selfId = client.getSelfId();
     if (selfId) {
         try {
@@ -2147,7 +2150,7 @@ async function activateGroupTypingIndicator(client: OneBotClient, accountId: str
     return true;
 }
 
-function clearGroupTypingCard(client: OneBotClient, accountId: string, groupId: number, busySuffix?: string): void {
+function clearGroupTypingCard(client: AnyQQClient, accountId: string, groupId: number, busySuffix?: string): void {
     const selfId = client.getSelfId();
     if (!selfId) return;
     const groupKey = `${accountId}:group:${groupId}`;
@@ -2298,7 +2301,7 @@ async function stageLocalFileForContainer(localPath: string, hostSharedDir: stri
 }
 
 async function uploadGroupFile(
-    client: OneBotClient,
+    client: AnyQQClient,
     groupId: number,
     filePath: string,
     fileName: string,
@@ -2316,7 +2319,7 @@ async function uploadGroupFile(
 }
 
 async function uploadPrivateFile(
-    client: OneBotClient,
+    client: AnyQQClient,
     userId: number,
     filePath: string,
     fileName: string,
@@ -2334,7 +2337,7 @@ async function uploadPrivateFile(
 }
 
 async function uploadFileToTarget(
-    client: OneBotClient,
+    client: AnyQQClient,
     to: string,
     filePath: string,
     fileName: string,
@@ -2523,7 +2526,7 @@ function resolveReplyPayloadPhase(payload: any): "commentary" | "final_answer" |
 }
 
 async function sendLongTextAsForwardMessage(params: {
-    client: OneBotClient;
+    client: AnyQQClient;
     groupId: number;
     text?: string;
     texts?: string[];
@@ -2672,7 +2675,7 @@ async function resolveInlineCqRecord(text: string): Promise<string> {
     return result;
 }
 
-async function sendOneBotMessageWithAck(client: OneBotClient, to: string, message: OneBotMessage | string): Promise<{ ok: boolean; data?: any; error?: string }> {
+async function sendOneBotMessageWithAck(client: AnyQQClient, to: string, message: OneBotMessage | string): Promise<{ ok: boolean; data?: any; error?: string }> {
     try {
         if (to.startsWith("group:")) {
             const data = await client.sendGroupMsgAck(parseInt(to.replace("group:", ""), 10), message);
@@ -2754,7 +2757,7 @@ function getRuntimeCfgForAccount(accountId: string | undefined | null): Partial<
 }
 
 async function sendQQTextMessage(params: {
-    client: OneBotClient;
+    client: AnyQQClient;
     to: string;
     text: string;
     replyToId?: string | null;
@@ -2791,7 +2794,7 @@ async function buildUploadableMediaRef(params: {
 }
 
 async function sendQQMediaMessage(params: {
-    client: OneBotClient;
+    client: AnyQQClient;
     to: string;
     text?: string;
     mediaUrl: string;
@@ -3081,7 +3084,10 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
     },
     status: {
         probeAccount: async ({ account, timeoutMs }) => {
-            if (!account.config.wsUrl) return { ok: false, error: "Missing wsUrl" };
+            const cfg = account.config;
+            if (cfg.protocol === "milky" ? !cfg.milkyUrl : !cfg.wsUrl) {
+                return { ok: false, error: cfg.protocol === "milky" ? "Missing milkyUrl" : "Missing wsUrl" };
+            }
 
             const runningClient = clients.get(account.accountId);
             if (runningClient) {
@@ -3100,10 +3106,9 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
                 }
             }
 
-            const client = new OneBotClient({
-                wsUrl: account.config.wsUrl,
-                accessToken: account.config.accessToken,
-            });
+            const client: AnyQQClient = cfg.protocol === "milky"
+                ? new MilkyClient({ baseUrl: cfg.milkyUrl!, accessToken: cfg.accessToken })
+                : new OneBotClient({ wsUrl: cfg.wsUrl, accessToken: cfg.accessToken });
 
             return new Promise((resolve) => {
                 const timer = setTimeout(() => {
@@ -3213,7 +3218,11 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
             const blockedUserIds = [...new Set(parseIdListInput(config.blockedUsers as string | number | Array<string | number> | undefined))];
             const blockedNotifyCooldownMs = Math.max(0, Number(config.blockedNotifyCooldownMs ?? 10000));
 
-            if (!config.wsUrl) throw new Error("QQ: wsUrl is required");
+            if (config.protocol === "milky") {
+                if (!config.milkyUrl) throw new Error("QQ: milkyUrl is required when protocol=milky");
+            } else {
+                if (!config.wsUrl) throw new Error("QQ: wsUrl is required when protocol=onebot");
+            }
 
             const existingLiveClient = clients.get(account.accountId);
             if (existingLiveClient?.isConnected()) {
@@ -3245,15 +3254,14 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
                 existingClient.disconnect();
             }
 
-            const client = new OneBotClient({
-                wsUrl: config.wsUrl,
-                accessToken: config.accessToken,
-            });
+            const client: AnyQQClient = config.protocol === "milky"
+                ? new MilkyClient({ baseUrl: config.milkyUrl!, accessToken: config.accessToken })
+                : new OneBotClient({ wsUrl: config.wsUrl, accessToken: config.accessToken });
 
             const isStaleGeneration = () => accountStartGeneration.get(account.accountId) !== accountGen;
 
             clients.set(account.accountId, client);
-            const clientSet = allClientsByAccount.get(account.accountId) || new Set<OneBotClient>();
+            const clientSet = allClientsByAccount.get(account.accountId) || new Set<AnyQQClient>();
             clientSet.add(client);
             allClientsByAccount.set(account.accountId, clientSet);
             ensureGlobalProcessedMsgCleanupTimer();
