@@ -38,6 +38,12 @@ type MilkyEvent = {
   };
 };
 
+function toInt(value: unknown): number {
+  if (typeof value === "number") return value;
+  const n = parseInt(String(value), 10);
+  return Number.isFinite(n) ? n : 0;
+}
+
 export class MilkyClient extends EventEmitter {
   private ws: WebSocket | null = null;
   private options: MilkyClientOptions;
@@ -117,7 +123,9 @@ export class MilkyClient extends EventEmitter {
     if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
     if (this.ws) {
       this.ws.removeAllListeners();
-      if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
+      if (this.ws.readyState === WebSocket.OPEN) {
+        this.ws.close(1000, "cleanup");
+      } else if (this.ws.readyState === WebSocket.CONNECTING) {
         this.ws.terminate();
       }
       this.ws = null;
@@ -366,6 +374,12 @@ export class MilkyClient extends EventEmitter {
       return this.apiCall("get_private_file_download_url", {
         user_id: params["user_id"],
         file_id: params["file_id"],
+      }, timeoutMs);
+    }
+    if (action === "get_group_member_info") {
+      return this.apiCall("get_group_member_info", {
+        group_id: toInt(params["group_id"]),
+        user_id: toInt(params["user_id"]),
       }, timeoutMs);
     }
     return this.apiCall(action, params, timeoutMs);
