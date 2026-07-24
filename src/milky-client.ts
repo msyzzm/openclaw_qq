@@ -103,6 +103,10 @@ export class MilkyClient extends EventEmitter {
         } catch { /* ignore non-JSON */ }
       });
 
+      this.ws.on("pong", () => {
+        this.lastMessageAt = Date.now();
+      });
+
       this.ws.on("close", () => { this.handleDisconnect(); });
 
       this.ws.on("error", (err) => {
@@ -135,12 +139,15 @@ export class MilkyClient extends EventEmitter {
   private startHeartbeat() {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = setInterval(() => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
       const staleMs = Date.now() - this.lastMessageAt;
-      if (staleMs > 180000) {
-        console.warn(`[QQ/Milky] No traffic for ${Math.round(staleMs / 1000)}s, reconnecting...`);
+      if (staleMs > 90000) {
+        console.warn(`[QQ/Milky] No pong for ${Math.round(staleMs / 1000)}s, reconnecting...`);
         this.handleDisconnect();
+        return;
       }
-    }, 45000);
+      this.ws.ping();
+    }, 30000);
   }
 
   private handleDisconnect() {
