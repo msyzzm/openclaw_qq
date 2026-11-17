@@ -979,6 +979,53 @@ async function collectVideoHintFromOneBotSegment(segment: any): Promise<QQInboun
     };
 }
 
+// Extract up to `maxFrames` frames from a locally cached video via ffmpeg so
+// vision-capable models can "see" video content. Frames are sampled evenly
+// across the video duration (10%..90%) to avoid intro black frames, and
+// near-black frames are dropped by a crude size heuristic.
+async function extractVideoFramesWithFfmpeg(videoPath: string, maxFrames = 4): Promise<string[]> {
+    try {
+        const frameDir = path.join(QQ_INBOUND_MEDIA_DIR, `video-frames-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+        await fs.mkdir(frameDir, { recursive: true });
+
+        let durationSec = 0;
+        try {
+            const { stdout } = await execFile("ffprobe", [
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                videoPath,
+            ], { timeout: 15_000 });
+            durationSec = parseFloat(String(stdout).trim()) || 0;
+        } catch { /* duration unknown; fall back to sequential sampling */ }
+
+        const fractions = [0.1, 0.3, 0.5, 0.7, 0.9].slice(0, Math.max(1, maxFrames));
+        const collected: string[] = [];
+        for (let i = 0; i < fractions.length && collected.length < maxFrames; i += 1) {
+            const outPath = path.join(frameDir, `frame-${String(i + 1).padStart(2, "0")}.jpg`);
+            const args = [
+                "-y",
+                ...(durationSec > 0 ? ["-ss", String(Math.max(0, durationSec * fractions[i] - 0.1))] : []),
+                "-i", videoPath,
+                "-frames:v", "1",
+                "-vf", "scale=min(1280\\,iw):-2",
+                "-q:v", "4",
+                outPath,
+            ];
+            try {
+                await execFile("ffmpeg", args, { timeout: 30_000 });
+                const stat = await fs.stat(outPath).catch(() => null);
+                // Black/near-black frames compress tiny at q=4; drop obvious duds (>15KB).
+                if (stat && stat.size > 15_000) collected.push(outPath);
+            } catch { /* skip this timestamp */ }
+        }
+        return collected.slice(0, maxFrames);
+    } catch (err) {
+        console.warn(`[QQ] ffmpeg video frame extraction failed: ${String(err)}`);
+        return [];
+    }
+}
+
 async function collectAudioHintFromOneBotSegment(segment: any): Promise<QQInboundAttachmentHint | null> {
     if (!segment || String(segment?.type || "").toLowerCase() !== "record") return null;
 
@@ -3372,6 +3419,7 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
                     const fileHints: QQInboundAttachmentHint[] = [];
                     const audioHints: QQInboundAttachmentHint[] = [];
                     const imageHints: string[] = [];
+                    const videoFrameEntries: InboundMediaEntry[] = [];
                     const imageHintMeta = new Map<string, { fileName?: string; mimeType?: string }>();
 
                     if (Array.isArray(event.message)) {
@@ -3413,23 +3461,53 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
                             else if (seg.type === "video") {
                                 const videoHint = await collectVideoHintFromOneBotSegment(seg);
                                 rememberAttachmentHint(fileHints, videoHint);
+                                if (videoHint?.localPath) {
+                                    const frames = await extractVideoFramesWithFfmpeg(videoHint.localPath);
+                                    if (frames.length > 0) {
+                                        for (const framePath of frames) videoFrameEntries.push({ path: framePath, type: "image/jpeg" });
+                                        resolvedText += ` [视频:已提取${frames.length}帧画面，见附图]`;
+                                        console.log(`[QQ] video frames extracted=${frames.length} for ${videoHint.name}`);
+                                    }
+                                }
                                 if (videoHint?.url) resolvedText += ` [视频: ${videoHint.url}]`;
                                 else resolvedText += " [视频消息]";
                             }
                             else if (seg.type === "json") resolvedText += " [卡片消息]";
                             else if (seg.type === "forward" && seg.data?.id) {
+                                let forwardExpanded = false;
                                 try {
                                     const forwardData = await client.getForwardMsg(seg.data.id);
                                     if (forwardData?.messages) {
                                         resolvedText += "\n[转发聊天记录]:";
                                         for (const m of forwardData.messages.slice(0, 10)) {
-                                            resolvedText += `\n${m.sender?.nickname || m.user_id}: ${cleanCQCodes(m.content || m.raw_message)}`;
+                                            // Use segment-aware summarization so media-only nodes
+                                            // (video/file/image) surface as placeholders instead of
+                                            // being stripped to empty text by cleanCQCodes.
+                                            const summarized = summarizeOneBotSegments((m as any).message || m.content || m.raw_message, 200);
+                                            resolvedText += `\n${m.sender?.nickname || m.user_id}: ${summarized.text || "(无文本，可能是纯媒体消息)"}`;
                                         }
+                                        forwardExpanded = true;
                                     }
                                 } catch (e) { }
+                                if (!forwardExpanded) {
+                                    // Lagrange.Milky has no forwarded-messages fetch API; leave a
+                                    // placeholder so the inbound body is never empty.
+                                    resolvedText += " [转发消息：当前协议端不支持展开合并转发内容，请直接发送或描述]";
+                                }
                             } else if (seg.type === "file") {
                                 const fileHint = await collectFileHintFromOneBotSegment(client, seg, { groupId: isGroup ? groupId : undefined, userId });
                                 rememberAttachmentHint(fileHints, fileHint);
+                                // Group video uploads often arrive as "file" segments (e.g. .mp4 via
+                                // 群文件). Extract frames so vision models can still see them.
+                                const videoFileName = String(fileHint?.name || "").toLowerCase();
+                                if (fileHint?.localPath && /\.(mp4|m4v|mov|mkv|webm|avi|flv|3gp)$/.test(videoFileName)) {
+                                    const frames = await extractVideoFramesWithFfmpeg(fileHint.localPath);
+                                    if (frames.length > 0) {
+                                        for (const framePath of frames) videoFrameEntries.push({ path: framePath, type: "image/jpeg" });
+                                        resolvedText += ` [视频文件 ${fileHint.name}:已提取${frames.length}帧画面，见附图]`;
+                                        console.log(`[QQ] video file frames extracted=${frames.length} for ${fileHint.name}`);
+                                    }
+                                }
                                 const shortHint = fileHint?.url
                                     ? ` [文件: ${fileHint.name}, 下载=${fileHint.url}]`
                                     : fileHint?.fileId
@@ -4070,7 +4148,7 @@ ${current}
                         for (let i = 0; i < chunks.length; i++) {
                             if (currentRunState?.isStale()) return i > 0;
                             let chunk = chunks[i];
-                            if (isGroup && i === 0) chunk = `[CQ:at,qq=${userId}] ${chunk}`;
+                            if (isGroup && i === 0 && config.mentionSenderOnReply !== false) chunk = `[CQ:at,qq=${userId}] ${chunk}`;
 
                             if (isGroup) client.sendGroupMsg(groupId, chunk);
                             else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, chunk);
@@ -4190,6 +4268,14 @@ ${current}
                             console.log(`[QQLayerTrace] outbound text kind=${info?.kind || "unknown"} phase=${phase || "unknown"} len=${payload.text.length}`);
                         }
                         if (payload.text && payload.text.trim()) {
+                            // Silent marker: model explicitly decided not to speak. Drop the payload
+                            // and mark content as seen so empty-reply fallback / retries stay off.
+                            const silentMarker = (config.silentMarker || "").trim();
+                            if (silentMarker && payload.text.trim() === silentMarker) {
+                                sawReplyContent = true;
+                                if (config.debugLayerTrace) console.log(`[QQ] silent marker hit; skipping outbound text (kind=${info?.kind || "unknown"} phase=${phase || "unknown"})`);
+                                return;
+                            }
                             const processed = await prepareOutgoingText(payload.text);
                             if (currentRunState?.isStale()) return;
                             if (processed.trim()) {
@@ -4325,6 +4411,7 @@ ${current}
                     const attachmentMediaEntries = collectAttachmentMediaEntries([...fileHints, ...audioHints]);
                     const inboundMediaPayload = buildInboundMediaPayloadFromEntries([
                         ...cachedInboundImages.entries,
+                        ...videoFrameEntries,
                         ...attachmentMediaEntries,
                     ]);
                     if (config.debugLayerTrace) {

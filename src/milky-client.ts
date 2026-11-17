@@ -139,7 +139,14 @@ export class MilkyClient extends EventEmitter {
   private startHeartbeat() {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = setInterval(() => {
-      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+      if (!this.ws) return;
+      // A socket stuck in CONNECTING/CLOSING/CLOSED without firing close/error
+      // would previously return forever, leaving a dead half-open connection.
+      if (this.ws.readyState !== WebSocket.OPEN) {
+        console.warn(`[QQ/Milky] Heartbeat found socket in state ${this.ws.readyState}; forcing reconnect...`);
+        this.handleDisconnect();
+        return;
+      }
       const staleMs = Date.now() - this.lastMessageAt;
       if (staleMs > 90000) {
         console.warn(`[QQ/Milky] No pong for ${Math.round(staleMs / 1000)}s, reconnecting...`);
