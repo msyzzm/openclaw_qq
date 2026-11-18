@@ -3991,7 +3991,9 @@ ${current}
                         if (!mentionedByAt && !mentionedByReply) return;
                     }
 
-                    if (config.adminOnlyChat && !isAdmin) {
+                    // adminOnlyChat gates direct messages only; group/guild chats are already
+                    // protected by allowedGroups/lurkGroups whitelists.
+                    if (config.adminOnlyChat && !isAdmin && !isGroup && !isGuild) {
                         if (config.notifyNonAdminBlocked) {
                             const shouldNotifyBlocked = !isGroup && !isGuild ? true : (isTriggered || mentionedByAt);
                             if (!shouldNotifyBlocked) return;
