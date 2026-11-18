@@ -195,6 +195,9 @@ const memberCache = new Map<string, { name: string, time: number }>();
 const groupInfoCache = new Map<string, { name: string, time: number }>();
 const execFile = promisify(execFileCallback);
 const QQ_INBOUND_MEDIA_DIR = path.join(process.env.HOME || homedir(), ".openclaw", "media", "inbound", "qq");
+// Lurk groups currently configured (account-level snapshot); guards channel-level
+// outbound sends and typing-presence leaks. Updated when account config is parsed.
+let activeLurkGroupIds: Set<number> = new Set();
 const QQ_INBOUND_MEDIA_MAX_BYTES = 10 * 1024 * 1024;
 const QQ_INBOUND_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024;
 const QQ_INBOUND_VIDEO_MAX_BYTES = 200 * 1024 * 1024;
@@ -2174,6 +2177,7 @@ async function setTempSessionSlot(threadKey: string, slot: string | null): Promi
 async function setGroupTypingCard(client: AnyQQClient, accountId: string, groupId: number, busySuffix: string): Promise<void> {
     const selfId = client.getSelfId();
     if (!selfId) return;
+    if (activeLurkGroupIds.has(groupId)) return; // never leak presence in lurk groups
     const groupKey = `${accountId}:group:${groupId}`;
     const suffix = (busySuffix || "输入中").trim() || "输入中";
     const current = groupBusyCounters.get(groupKey) || 0;
@@ -2196,6 +2200,7 @@ async function setGroupTypingCard(client: AnyQQClient, accountId: string, groupI
 }
 
 async function activateGroupTypingIndicator(client: AnyQQClient, accountId: string, groupId: number, busySuffix: string): Promise<boolean> {
+    if (activeLurkGroupIds.has(groupId)) return false; // never leak typing presence in lurk groups
     const selfId = client.getSelfId();
     if (selfId) {
         try {
@@ -2738,6 +2743,13 @@ async function resolveInlineCqRecord(text: string): Promise<string> {
 async function sendOneBotMessageWithAck(client: AnyQQClient, to: string, message: OneBotMessage | string): Promise<{ ok: boolean; data?: any; error?: string }> {
     try {
         if (to.startsWith("group:")) {
+            const lurkGid = parseInt(to.replace("group:", ""), 10);
+            // Channel-level lurk guard: proactive/recovery/cross-session sends to a lurk
+            // group must never leak. Message-triggered forwarding is handled in deliver().
+            if (activeLurkGroupIds.has(lurkGid)) {
+                console.warn(`[QQ] blocked channel-level outbound to lurk group ${lurkGid}`);
+                return { ok: true, data: "suppressed-lurk" };
+            }
             const data = await client.sendGroupMsgAck(parseInt(to.replace("group:", ""), 10), message);
             return { ok: true, data };
         }
@@ -3276,6 +3288,8 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
             const adminIds = [...new Set(parseIdListInput(config.admins as string | number | Array<string | number> | undefined))];
             const lurkGroupIds = [...new Set(parseIdListInput(config.lurkGroups as string | number | Array<string | number> | undefined))];
             const lurkForwardTarget = String(config.lurkForwardTarget || "").trim();
+            // Publish for module-level guards (channel outbound choke point, typing presence).
+            activeLurkGroupIds = new Set(lurkGroupIds);
             const allowedGroupIds = [...new Set(parseIdListInput(config.allowedGroups as string | number | Array<string | number> | undefined))];
             const blockedUserIds = [...new Set(parseIdListInput(config.blockedUsers as string | number | Array<string | number> | undefined))];
             const blockedNotifyCooldownMs = Math.max(0, Number(config.blockedNotifyCooldownMs ?? 10000));
