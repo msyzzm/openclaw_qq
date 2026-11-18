@@ -3274,6 +3274,8 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
             const config = account.config;
             accountConfigs.set(account.accountId, config);
             const adminIds = [...new Set(parseIdListInput(config.admins as string | number | Array<string | number> | undefined))];
+            const lurkGroupIds = [...new Set(parseIdListInput(config.lurkGroups as string | number | Array<string | number> | undefined))];
+            const lurkForwardTarget = String(config.lurkForwardTarget || "").trim();
             const allowedGroupIds = [...new Set(parseIdListInput(config.allowedGroups as string | number | Array<string | number> | undefined))];
             const blockedUserIds = [...new Set(parseIdListInput(config.blockedUsers as string | number | Array<string | number> | undefined))];
             const blockedNotifyCooldownMs = Math.max(0, Number(config.blockedNotifyCooldownMs ?? 10000));
@@ -3520,7 +3522,7 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
                     }
 
                     if (blockedUserIds.includes(userId)) return;
-                    if (isGroup && allowedGroupIds.length && !allowedGroupIds.includes(groupId)) return;
+                    if (isGroup && allowedGroupIds.length && !allowedGroupIds.includes(groupId) && !lurkGroupIds.includes(groupId)) return;
 
                     const isAdmin = adminIds.includes(userId);
                     await ensureTempSessionSlotsLoaded();
@@ -4268,6 +4270,24 @@ ${current}
                             console.log(`[QQLayerTrace] outbound text kind=${info?.kind || "unknown"} phase=${phase || "unknown"} len=${payload.text.length}`);
                         }
                         if (payload.text && payload.text.trim()) {
+                            // Lurk groups: swallow every direct reply; only [转发到主群]-prefixed
+                            // messages are redirected to the configured forward target group.
+                            if (isGroup && groupId !== undefined && lurkGroupIds.includes(groupId)) {
+                                const fwdMarker = "[转发到主群]";
+                                const rawTrimmed = payload.text.trim();
+                                if (rawTrimmed.startsWith(fwdMarker) && lurkForwardTarget) {
+                                    const fwdText = rawTrimmed.slice(fwdMarker.length).trim();
+                                    if (fwdText) {
+                                        sawReplyContent = true;
+                                        deliveredAnything = true;
+                                        client.sendGroupMsg(parseInt(lurkForwardTarget, 10), `📡 潜伏群播报：\n${fwdText}`);
+                                        console.log(`[QQ] lurk forward delivered lurk=${groupId} target=${lurkForwardTarget} len=${fwdText.length}`);
+                                    }
+                                    return;
+                                }
+                                sawReplyContent = true; // intentional silence: suppress fallback/retry
+                                return;
+                            }
                             // Silent marker: model explicitly decided not to speak. Drop the payload
                             // and mark content as seen so empty-reply fallback / retries stay off.
                             const silentMarker = (config.silentMarker || "").trim();
@@ -4364,6 +4384,9 @@ ${current}
                             mentionedByReply,
                             keywordTriggered,
                         });
+                    }
+                    if (isGroup && groupId !== undefined && lurkGroupIds.includes(groupId)) {
+                        systemBlock += `<lurk_mode>当前群是你的潜伏群：你在这里绝对不能直接说话，任何普通回复都不会被发出（被@也不行）。判断规则：绝大多数消息输出 [SILENT]。仅当出现值得分享的内容——有趣的图片、搞笑的聊天记录、重要或劲爆的消息——才输出以 [转发到主群] 开头的消息（后面跟一两句毒舌点评，图片可附 [CQ:image,file=图片URL]）。宁可漏过一条乐子，也不要转发无聊内容刷屏。</lurk_mode>\n\n`;
                     }
                     if (config.systemPrompt) systemBlock += `<system>${config.systemPrompt}</system>\n\n`;
                     if (historyContext) systemBlock += `<history>\n${historyContext}\n</history>\n\n`;

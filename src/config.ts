@@ -97,6 +97,8 @@ export const QQConfigSchema = z.object({
   formatMarkdown: BooleanInputSchema(false).describe("把 Markdown 转纯文本，QQ 显示更清晰。"),
   antiRiskMode: BooleanInputSchema(false).describe("风控规避模式（例如处理 URL 发送样式）。"),
   allowedGroups: IdListStringSchema.describe("允许响应的群号白名单（字符串）。Web表单填：20000001 123456789；Raw JSON 填：\"20000001 123456789\"。"),
+  lurkGroups: IdListStringSchema.describe("潜伏群列表（字符串）。这些群的消息会进agent但任何直接回复都被吞掉（被@也不回）；仅当回复以 [转发到主群] 开头时重定向发送到 lurkForwardTarget。Raw JSON 填：\"300000012,300000013\"。"),
+  lurkForwardTarget: z.preprocess((value) => normalizeLooseString(value), z.string().optional().default("")).describe("潜伏群内容转发目标群号。留空时 [转发到主群] 消息也会被丢弃。"),
   blockedUsers: IdListStringSchema.describe("用户黑名单QQ号（字符串）。Web表单填：30000001 或 30000001,10002；Raw JSON 填：\"30000001\"。"),
   historyLimit: NumberInputSchema(0).describe("群历史注入条数。默认0（推荐，依赖会话系统）；需强保留原文时可设 3~5。"),
   keywordOnlyTrigger: BooleanInputSchema(false).describe("群聊仅关键词触发开关。开启后，@机器人/回复机器人消息不再触发；建议配合 keywordTriggers 一起使用。适合与其他机器人共用同一 QQ 账号时避免双重回复。"),
