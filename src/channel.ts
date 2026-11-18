@@ -4406,7 +4406,10 @@ ${current}
                         });
                     }
                     if (isGroup && groupId !== undefined && lurkGroupIds.includes(groupId)) {
-                        systemBlock += `<lurk_mode>当前群是你的潜伏群：你在这里绝对不能直接说话，任何普通回复都不会被发出（被@也不行）。转发规则：看到值得分享的内容就转，不设数量限制——搞笑的图和表情包、沙雕对话、炸裂发言、值得分享的观点或新闻、有意思的梗。输出以 [转发到主群] 开头的消息：先一两句毒舌点评勾起好奇心，图片直接附 [CQ:image,file=图片URL] 转发原图。纯灌水、重复话题、无意义的争论才跳过（输出 [SILENT]）。拿不准转不转时，转。</lurk_mode>\n\n`;
+                        systemBlock += `<lurk_mode>【最高优先级指令】当前群是你的潜伏群。你的输出只有两种合法格式，没有第三种：
+格式A：[SILENT] —— 不值得转发时输出这个，只输出这七个字符。
+格式B：[转发到主群] 你的毒舌点评 —— 内容确实值得主群的人看时（有趣的图/表情包、沙雕对话、炸裂发言、有价值的信息），先一两句点评，图片附 [CQ:image,file=图片URL]。
+任何不带这两种格式开头的输出都会被系统直接丢弃，群友永远看不到——所以"直接聊天"是无效行为，纯浪费。不要回复潜伏群的消息，不要参与讨论，不要@任何人，你在这里只是观察员。判断标准：主群的人看了会觉得有趣或有信息量才用格式B；只是你自己想插嘴抖机灵就用格式A。纯灌水、重复话题、无意义争论一律格式A。</lurk_mode>\n\n`;
                     }
                     if (config.systemPrompt) systemBlock += `<system>${config.systemPrompt}</system>\n\n`;
                     if (historyContext) systemBlock += `<history>\n${historyContext}\n</history>\n\n`;
