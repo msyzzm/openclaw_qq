@@ -4388,7 +4388,7 @@ ${current}
                         });
                     }
                     if (isGroup && groupId !== undefined && lurkGroupIds.includes(groupId)) {
-                        systemBlock += `<lurk_mode>当前群是你的潜伏群：你在这里绝对不能直接说话，任何普通回复都不会被发出（被@也不行）。判断规则：绝大多数消息输出 [SILENT]。仅当出现值得分享的内容——有趣的图片、搞笑的聊天记录、重要或劲爆的消息——才输出以 [转发到主群] 开头的消息（后面跟一两句毒舌点评，图片可附 [CQ:image,file=图片URL]）。宁可漏过一条乐子，也不要转发无聊内容刷屏。</lurk_mode>\n\n`;
+                        systemBlock += `<lurk_mode>当前群是你的潜伏群：你在这里绝对不能直接说话，任何普通回复都不会被发出（被@也不行）。转发节奏：保持每天2~5条的播报量，别当哑巴也别刷屏。值得转发的都转：搞笑的图和表情包、沙雕对话、炸裂发言、值得分享的观点或新闻、有意思的梗。输出以 [转发到主群] 开头的消息：先一两句毒舌点评勾起好奇心，图片直接附 [CQ:image,file=图片URL] 转发原图。纯灌水、重复话题、无意义的争论才跳过（输出 [SILENT]）。拿不准转不转时，转。</lurk_mode>\n\n`;
                     }
                     if (config.systemPrompt) systemBlock += `<system>${config.systemPrompt}</system>\n\n`;
                     if (historyContext) systemBlock += `<history>\n${historyContext}\n</history>\n\n`;
