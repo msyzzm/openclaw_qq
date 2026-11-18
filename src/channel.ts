@@ -4294,16 +4294,21 @@ ${current}
                             // Lurk groups: swallow every direct reply; only [转发到主群]-prefixed
                             // messages are redirected to the configured forward target group.
                             if (isGroup && groupId !== undefined && lurkGroupIds.includes(groupId)) {
-                                const fwdMarkers = ["[转发到主群]", "［转发到主群］", "【转发到主群】"];
+                                const fwdMarkers = ["[转发到主群]", "［转发到主群］", "【转发到主群】", "[转发]", "［转发］", "【转发】"];
                                 const rawTrimmed = payload.text.trim();
                                 const usedMarker = fwdMarkers.find((m) => rawTrimmed.startsWith(m));
                                 if (usedMarker && lurkForwardTarget) {
-                                    const fwdText = rawTrimmed.slice(usedMarker.length).replace(/^[:：\s]+/, "").trim();
-                                    if (fwdText) {
+                                    // Relay the ORIGINAL inbound content verbatim: text as-is plus
+                                    // native image CQ codes built from the real message URLs. The
+                                    // model only judged "interesting or not"; it never rewrites.
+                                    const imageCodes = imageHints.slice(0, 5).map((u) => `[CQ:image,file=${u}]`).join("\n");
+                                    const originalText = String(text || "").trim();
+                                    const fwdBody = [originalText, imageCodes].filter(Boolean).join("\n");
+                                    if (fwdBody) {
                                         sawReplyContent = true;
                                         deliveredAnything = true;
-                                        client.sendGroupMsg(parseInt(lurkForwardTarget, 10), `📡 潜伏群播报：\n${fwdText}`);
-                                        console.log(`[QQ] lurk forward delivered lurk=${groupId} target=${lurkForwardTarget} len=${fwdText.length}`);
+                                        client.sendGroupMsg(parseInt(lurkForwardTarget, 10), `📡 潜伏群播报：\n${fwdBody}`);
+                                        console.log(`[QQ] lurk forward delivered (original relay) lurk=${groupId} target=${lurkForwardTarget} images=${imageHints.length}`);
                                     }
                                     return;
                                 }
@@ -4412,10 +4417,13 @@ ${current}
                     }
                     if (config.systemPrompt) systemBlock += `<system>${config.systemPrompt}</system>\n\n`;
                     if (isGroup && groupId !== undefined && lurkGroupIds.includes(groupId)) {
-                        systemBlock += `<lurk_mode>【覆盖性指令：本块优先级高于上面的系统提示，两者冲突时以本块为准】当前群是你的潜伏群。系统提示里"被@必须回答"的规则在本群无效——在潜伏群，被@、被提问、被调侃都绝对不能直接回复，群友看不到你任何直接发言。你的输出只有两种合法格式，没有第三种：
-格式A：[SILENT] —— 不值得转发时输出这个，只输出这七个字符。
-格式B：[转发到主群] 你的毒舌点评 —— 内容确实值得主群的人看时（有趣的图/表情包、沙雕对话、炸裂发言、有价值的信息），先一两句点评，图片附 [CQ:image,file=图片URL]。
-任何其他格式的输出都会被系统直接丢弃——直接聊天是无效行为。不要回复、不要参与讨论、不要@任何人，你在这里只是观察员兼情报员。判断标准：主群的人看了会觉得有趣或有信息量才用格式B；只是你自己想插嘴抖机灵就用格式A。纯灌水、重复话题、无意义争论一律格式A。</lurk_mode>\n\n`;
+                        systemBlock += `<lurk_mode>【覆盖性指令：本块优先级高于上面的系统提示，两者冲突时以本块为准】当前群是你的潜伏群。系统提示里"被@必须回答"的规则在本群无效——在潜伏群，被@、被提问、被调侃都绝对不能直接回复。你的输出只有两种合法格式：
+格式A：[SILENT]（只输出这七个字符，别的什么都不加）
+格式B：[转发到主群] 你的毒舌点评（图片附 [CQ:image,file=图片URL]）
+示例1——群友@你说"何意味，你这猫又坏了"：这是群友在调侃你本人，不是值得主群看的内容，正确输出：[SILENT]
+示例2——群友发了一张有趣的机甲图：值得主群看，正确输出：[转发到主群] 90年代机甲图？啧，这个年代的机甲连一颗螺丝钉都画得明明白白……
+示例3——群友问你"你觉得XX模型怎么样"：只是群里闲聊，正确输出：[SILENT]
+任何其他格式的输出都会被系统直接丢弃，群友永远看不到——直接聊天是无效行为。不要回复、不要参与讨论、不要@任何人，你在这里只是观察员兼情报员。判断标准：主群的人看了会觉得有趣或有信息量才用格式B；只是你自己想插嘴抖机灵就用格式A。</lurk_mode>\n\n`;
                     }
                     if (historyContext) systemBlock += `<history>\n${historyContext}\n</history>\n\n`;
                     if (config.debugLayerTrace) {
