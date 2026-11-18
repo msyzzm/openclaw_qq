@@ -4275,10 +4275,11 @@ ${current}
                             // Lurk groups: swallow every direct reply; only [转发到主群]-prefixed
                             // messages are redirected to the configured forward target group.
                             if (isGroup && groupId !== undefined && lurkGroupIds.includes(groupId)) {
-                                const fwdMarker = "[转发到主群]";
+                                const fwdMarkers = ["[转发到主群]", "［转发到主群］", "【转发到主群】"];
                                 const rawTrimmed = payload.text.trim();
-                                if (rawTrimmed.startsWith(fwdMarker) && lurkForwardTarget) {
-                                    const fwdText = rawTrimmed.slice(fwdMarker.length).trim();
+                                const usedMarker = fwdMarkers.find((m) => rawTrimmed.startsWith(m));
+                                if (usedMarker && lurkForwardTarget) {
+                                    const fwdText = rawTrimmed.slice(usedMarker.length).replace(/^[:：\s]+/, "").trim();
                                     if (fwdText) {
                                         sawReplyContent = true;
                                         deliveredAnything = true;
@@ -4286,6 +4287,9 @@ ${current}
                                         console.log(`[QQ] lurk forward delivered lurk=${groupId} target=${lurkForwardTarget} len=${fwdText.length}`);
                                     }
                                     return;
+                                }
+                                if (rawTrimmed !== "[SILENT]") {
+                                    console.log(`[QQ] lurk suppressed (no marker) preview: ${rawTrimmed.slice(0, 160).replace(/\n/g, " ")}`);
                                 }
                                 sawReplyContent = true; // intentional silence: suppress fallback/retry
                                 return;
