@@ -198,6 +198,11 @@ const QQ_INBOUND_MEDIA_DIR = path.join(process.env.HOME || homedir(), ".openclaw
 // Lurk groups currently configured (account-level snapshot); guards channel-level
 // outbound sends and typing-presence leaks. Updated when account config is parsed.
 let activeLurkGroupIds: Set<number> = new Set();
+// Fallback-forward cooldown: models often ignore the [转发到主群] marker contract and
+// emit plain commentary; when that happens, forward it anyway but at most once per
+// group per cooldown window.
+const lurkFallbackForwardAt = new Map<number, number>();
+const LURK_FALLBACK_FORWARD_COOLDOWN_MS = 15 * 60 * 1000;
 const QQ_INBOUND_MEDIA_MAX_BYTES = 10 * 1024 * 1024;
 const QQ_INBOUND_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024;
 const QQ_INBOUND_VIDEO_MAX_BYTES = 200 * 1024 * 1024;
@@ -4405,13 +4410,13 @@ ${current}
                             keywordTriggered,
                         });
                     }
+                    if (config.systemPrompt) systemBlock += `<system>${config.systemPrompt}</system>\n\n`;
                     if (isGroup && groupId !== undefined && lurkGroupIds.includes(groupId)) {
-                        systemBlock += `<lurk_mode>【最高优先级指令】当前群是你的潜伏群。你的输出只有两种合法格式，没有第三种：
+                        systemBlock += `<lurk_mode>【覆盖性指令：本块优先级高于上面的系统提示，两者冲突时以本块为准】当前群是你的潜伏群。系统提示里"被@必须回答"的规则在本群无效——在潜伏群，被@、被提问、被调侃都绝对不能直接回复，群友看不到你任何直接发言。你的输出只有两种合法格式，没有第三种：
 格式A：[SILENT] —— 不值得转发时输出这个，只输出这七个字符。
 格式B：[转发到主群] 你的毒舌点评 —— 内容确实值得主群的人看时（有趣的图/表情包、沙雕对话、炸裂发言、有价值的信息），先一两句点评，图片附 [CQ:image,file=图片URL]。
-任何不带这两种格式开头的输出都会被系统直接丢弃，群友永远看不到——所以"直接聊天"是无效行为，纯浪费。不要回复潜伏群的消息，不要参与讨论，不要@任何人，你在这里只是观察员。判断标准：主群的人看了会觉得有趣或有信息量才用格式B；只是你自己想插嘴抖机灵就用格式A。纯灌水、重复话题、无意义争论一律格式A。</lurk_mode>\n\n`;
+任何其他格式的输出都会被系统直接丢弃——直接聊天是无效行为。不要回复、不要参与讨论、不要@任何人，你在这里只是观察员兼情报员。判断标准：主群的人看了会觉得有趣或有信息量才用格式B；只是你自己想插嘴抖机灵就用格式A。纯灌水、重复话题、无意义争论一律格式A。</lurk_mode>\n\n`;
                     }
-                    if (config.systemPrompt) systemBlock += `<system>${config.systemPrompt}</system>\n\n`;
                     if (historyContext) systemBlock += `<history>\n${historyContext}\n</history>\n\n`;
                     if (config.debugLayerTrace) {
                         console.log(`[QQLayerTrace] invoke buildReplyForwardContextBlock enrich=${String(config.enrichReplyForwardContext)} debug=${String(config.debugLayerTrace)} hasReply=${String(Boolean(repliedMsg))}`);
