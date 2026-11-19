@@ -4174,6 +4174,14 @@ ${current}
                     };
 
                     const sendProcessedText = async (processed: string): Promise<boolean> => {
+                        // Hard character cap: truncate at a sentence boundary when possible.
+                        const maxReplyChars = Number(config.maxReplyChars || 0);
+                        if (maxReplyChars > 0 && processed.length > maxReplyChars && !processed.includes("[CQ:")) {
+                            const cut = processed.slice(0, maxReplyChars);
+                            const lastStop = Math.max(cut.lastIndexOf("。"), cut.lastIndexOf("！"), cut.lastIndexOf("？"), cut.lastIndexOf("；"), cut.lastIndexOf("，"), cut.lastIndexOf("\n"));
+                            processed = (lastStop > maxReplyChars * 0.5 ? cut.slice(0, lastStop + 1) : cut) + "……";
+                            console.log(`[QQ] reply truncated to ${processed.length} chars (max ${maxReplyChars})`);
+                        }
                         if (currentRunState?.isStale()) return false;
                         const chunks = splitMessage(processed, config.maxMessageLength || 4000);
                         for (let i = 0; i < chunks.length; i++) {

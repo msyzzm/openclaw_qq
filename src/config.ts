@@ -104,6 +104,7 @@ export const QQConfigSchema = z.object({
   keywordOnlyTrigger: BooleanInputSchema(false).describe("群聊仅关键词触发开关。开启后，@机器人/回复机器人消息不再触发；建议配合 keywordTriggers 一起使用。适合与其他机器人共用同一 QQ 账号时避免双重回复。"),
   silentMarker: z.preprocess((value) => normalizeLooseString(value), z.string().optional().default("")).describe("沉默标记。非空时，若模型整段回复恰好等于该标记（如 [SILENT]），则不向 QQ 发送任何消息——配合 requireMention=false 可实现“agent 自己判断要不要说话”。默认空（关闭）。"),
   proactiveReplyCooldownMs: NumberInputSchema(0).describe("群聊主动发言冷却（毫秒）。非@/非回复触发的回复，在该间隔内的后续主动回复会被丢弃；被@和被回复不受限制。默认 0（关闭）。10分钟可填 600000。"),
+  maxReplyChars: NumberInputSchema(0).describe("单条回复的硬性字数上限。超过时在句号/感叹号等边界截断并加省略号；0=关闭。建议 80。"),
   keywordTriggers: KeywordTriggersSchema.describe("关键词触发（字符串）。Web表单填：小助手, 帮我；Raw JSON 填：\"小助手, 帮我\"。当 requireMention=true 时，命中关键词可不@直接触发；当 requireMention=false 时，关键词不是必需条件；当 keywordOnlyTrigger=true 时，群聊里只有命中这些关键词才会触发。"),
   allowBareGroupCommands: BooleanInputSchema(false).describe("群聊里是否允许只发 /model 这类裸 slash 指令就直接触发。默认关闭；关闭后需配合关键词触发，例如“椰子 /model”。"),
   enableDynamicModelCatalog: BooleanInputSchema(false).describe("是否让本地 /model 列表主动探测各 provider 的 /models 并展示全量模型。默认关闭，保持更接近原版 OpenClaw 的 /model；如需动态聚合模型目录再手动开启。"),
