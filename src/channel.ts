@@ -4299,16 +4299,25 @@ ${current}
                                 const usedMarker = fwdMarkers.find((m) => rawTrimmed.startsWith(m));
                                 if (usedMarker && lurkForwardTarget) {
                                     // Relay the ORIGINAL inbound content verbatim: text as-is plus
-                                    // native image CQ codes built from the real message URLs. The
+                                    // native image/video CQ codes built from the real message URLs. The
                                     // model only judged "interesting or not"; it never rewrites.
                                     const imageCodes = imageHints.slice(0, 5).map((u) => `[CQ:image,file=${u}]`).join("\n");
-                                    const originalText = String(text || "").trim();
-                                    const fwdBody = [originalText, imageCodes].filter(Boolean).join("\n");
+                                    const videoHints = fileHints.filter((h) => h.kind === "video" && h.url).slice(0, 1);
+                                    const videoCodes = videoHints.map((h) => `[CQ:video,file=${h.url}]`).join("\n");
+                                    // Strip the plugin's own media annotations from the relayed text:
+                                    // the media itself is attached natively, raw URLs are noise.
+                                    const originalText = String(text || "")
+                                        .replace(/\s*\[图片:[^\]]*\]/g, "")
+                                        .replace(/\s*\[视频:[^\]]*\]/g, "")
+                                        .replace(/\s*\[图片\]/g, "")
+                                        .replace(/\s*\[视频消息\]/g, "")
+                                        .trim();
+                                    const fwdBody = [originalText, imageCodes, videoCodes].filter(Boolean).join("\n");
                                     if (fwdBody) {
                                         sawReplyContent = true;
                                         deliveredAnything = true;
                                         client.sendGroupMsg(parseInt(lurkForwardTarget, 10), `📡 潜伏群播报：\n${fwdBody}`);
-                                        console.log(`[QQ] lurk forward delivered (original relay) lurk=${groupId} target=${lurkForwardTarget} images=${imageHints.length}`);
+                                        console.log(`[QQ] lurk forward delivered (original relay) lurk=${groupId} target=${lurkForwardTarget} images=${imageHints.length} videos=${videoHints.length}`);
                                     }
                                     return;
                                 }
