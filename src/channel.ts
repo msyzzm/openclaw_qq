@@ -4307,15 +4307,8 @@ ${current}
                                     const imageCodes = imageHints.slice(0, 5).map((u) => `[CQ:image,file=${u}]`).join("\n");
                                     const videoHints = fileHints.filter((h) => h.kind === "video" && h.url).slice(0, 1);
                                     const videoCodes = videoHints.map((h) => `[CQ:video,file=${h.url}]`).join("\n");
-                                    // Strip the plugin's own media annotations from the relayed text:
-                                    // the media itself is attached natively, raw URLs are noise.
-                                    const originalText = String(text || "")
-                                        .replace(/\s*\[图片:[^\]]*\]/g, "")
-                                        .replace(/\s*\[视频:[^\]]*\]/g, "")
-                                        .replace(/\s*\[图片\]/g, "")
-                                        .replace(/\s*\[视频消息\]/g, "")
-                                        .trim();
-                                    const fwdBody = [originalText, imageCodes, videoCodes].filter(Boolean).join("\n");
+                                    // Media-only relay: images/videos only, original text dropped.
+                                    const fwdBody = [imageCodes, videoCodes].filter(Boolean).join("\n");
                                     if (fwdBody) {
                                         sawReplyContent = true;
                                         deliveredAnything = true;
