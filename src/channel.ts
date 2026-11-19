@@ -991,6 +991,11 @@ async function collectVideoHintFromOneBotSegment(segment: any): Promise<QQInboun
 // vision-capable models can "see" video content. Frames are sampled evenly
 // across the video duration (10%..90%) to avoid intro black frames, and
 // near-black frames are dropped by a crude size heuristic.
+// Proactive reply cooldown: in normal (non-lurk) groups, replies not triggered by
+// an @mention or a reply-to-bot are dropped when the last proactive reply is newer
+// than this window. Mention-triggered replies are never throttled.
+const proactiveReplyAt = new Map<number, number>();
+
 async function extractVideoFramesWithFfmpeg(videoPath: string, maxFrames = 4): Promise<string[]> {
     try {
         const frameDir = path.join(QQ_INBOUND_MEDIA_DIR, `video-frames-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
@@ -4332,6 +4337,18 @@ ${current}
                                 sawReplyContent = true;
                                 if (config.debugLayerTrace) console.log(`[QQ] silent marker hit; skipping outbound text (kind=${info?.kind || "unknown"} phase=${phase || "unknown"})`);
                                 return;
+                            }
+                            // Proactive reply cooldown (normal groups): drop replies that were not
+                            // triggered by an @mention / reply-to-bot when still inside the window.
+                            const cooldownMs = Number(config.proactiveReplyCooldownMs || 0);
+                            if (isGroup && groupId !== undefined && cooldownMs > 0 && !(mentionedByAt || mentionedByReply)) {
+                                const lastProactive = proactiveReplyAt.get(groupId) ?? 0;
+                                if (Date.now() - lastProactive < cooldownMs) {
+                                    sawReplyContent = true;
+                                    console.log(`[QQ] proactive reply dropped by cooldown group=${groupId} remaining=${Math.round((cooldownMs - (Date.now() - lastProactive)) / 1000)}s`);
+                                    return;
+                                }
+                                proactiveReplyAt.set(groupId, Date.now());
                             }
                             const processed = await prepareOutgoingText(payload.text);
                             if (currentRunState?.isStale()) return;
