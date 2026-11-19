@@ -4194,8 +4194,13 @@ ${current}
                     };
 
                     const sendProcessedText = async (processed: string): Promise<boolean> => {
-                        // Hard character cap: truncate at a sentence boundary when possible.
-                        const maxReplyChars = Number(config.maxReplyChars || 0);
+                        // Hard character cap: proactive replies are capped at maxReplyChars;
+                        // mention-triggered replies (real questions/summaries) get the roomier
+                        // maxMentionReplyChars budget.
+                        const isMentionTriggered = Boolean(mentionedByAt || mentionedByReply);
+                        const maxReplyChars = Number(
+                            (isMentionTriggered ? (config.maxMentionReplyChars ?? 800) : config.maxReplyChars) || 0
+                        );
                         if (maxReplyChars > 0 && processed.length > maxReplyChars && !processed.includes("[CQ:")) {
                             const cut = processed.slice(0, maxReplyChars);
                             const lastStop = Math.max(cut.lastIndexOf("。"), cut.lastIndexOf("！"), cut.lastIndexOf("？"), cut.lastIndexOf("；"), cut.lastIndexOf("，"), cut.lastIndexOf("\n"));
