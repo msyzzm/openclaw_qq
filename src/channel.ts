@@ -4366,7 +4366,9 @@ ${current}
                             // Silent marker: model explicitly decided not to speak. Drop the payload
                             // and mark content as seen so empty-reply fallback / retries stay off.
                             const silentMarker = (config.silentMarker || "").trim();
-                            if (silentMarker && payload.text.trim() === silentMarker) {
+                            // Punctuation-only output ("……", "。。。") is also silence, not a reply.
+                            const isPunctOnly = payload.text.trim().replace(/[\s.。…·~～\-—!！?？,，、()（）]/g, "").length === 0;
+                            if ((silentMarker && payload.text.trim() === silentMarker) || isPunctOnly) {
                                 sawReplyContent = true;
                                 if (config.debugLayerTrace) console.log(`[QQ] silent marker hit; skipping outbound text (kind=${info?.kind || "unknown"} phase=${phase || "unknown"})`);
                                 return;
