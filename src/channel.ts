@@ -3292,7 +3292,10 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
             accountConfigs.set(account.accountId, config);
             const adminIds = [...new Set(parseIdListInput(config.admins as string | number | Array<string | number> | undefined))];
             const lurkGroupIds = [...new Set(parseIdListInput(config.lurkGroups as string | number | Array<string | number> | undefined))];
-            const lurkForwardTarget = String(config.lurkForwardTarget || "").trim();
+            const lurkForwardTargets = String(config.lurkForwardTarget || "")
+                .split(/[,，\s]+/)
+                .map((s) => s.trim())
+                .filter(Boolean);
             // Publish for module-level guards (channel outbound choke point, typing presence).
             activeLurkGroupIds = new Set(lurkGroupIds);
             const allowedGroupIds = [...new Set(parseIdListInput(config.allowedGroups as string | number | Array<string | number> | undefined))];
@@ -4297,7 +4300,7 @@ ${current}
                                 const fwdMarkers = ["[转发到主群]", "［转发到主群］", "【转发到主群】", "[转发]", "［转发］", "【转发】"];
                                 const rawTrimmed = payload.text.trim();
                                 const usedMarker = fwdMarkers.find((m) => rawTrimmed.startsWith(m));
-                                if (usedMarker && lurkForwardTarget) {
+                                if (usedMarker && lurkForwardTargets.length > 0) {
                                     // Relay the ORIGINAL inbound content verbatim: text as-is plus
                                     // native image/video CQ codes built from the real message URLs. The
                                     // model only judged "interesting or not"; it never rewrites.
@@ -4316,8 +4319,10 @@ ${current}
                                     if (fwdBody) {
                                         sawReplyContent = true;
                                         deliveredAnything = true;
-                                        client.sendGroupMsg(parseInt(lurkForwardTarget, 10), fwdBody);
-                                        console.log(`[QQ] lurk forward delivered (original relay) lurk=${groupId} target=${lurkForwardTarget} images=${imageHints.length} videos=${videoHints.length}`);
+                                        for (const target of lurkForwardTargets) {
+                                            client.sendGroupMsg(parseInt(target, 10), fwdBody);
+                                        }
+                                        console.log(`[QQ] lurk forward delivered (original relay) lurk=${groupId} targets=${lurkForwardTargets.join(",")} images=${imageHints.length} videos=${videoHints.length}`);
                                     }
                                     return;
                                 }
