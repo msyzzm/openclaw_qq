@@ -4765,6 +4765,18 @@ ${current}
                         }
                     };
 
+                    // Lurk groups: skip pure-text messages entirely — no LLM call, no dispatch.
+                    // Only media-bearing messages (image/video/file/voice/forward) are worth judging.
+                    if (isGroup && groupId !== undefined && lurkGroupIds.includes(groupId)) {
+                        const hasMediaSegment = Array.isArray(event.message)
+                            && event.message.some((s: any) => ["image", "record", "video", "file", "forward"].includes(String(s?.type || "").toLowerCase()));
+                        const hasMediaHint = imageHints.length > 0 || fileHints.length > 0 || audioHints.length > 0;
+                        if (!hasMediaSegment && !hasMediaHint) {
+                            console.log(`[QQ] lurk skip pure-text message group=${groupId} user=${userId}`);
+                            return;
+                        }
+                    }
+
                     enqueueQQMessageForDispatch(
                         route.sessionKey,
                         { ctxPayload, executeDispatch, runEpoch: 0 },
