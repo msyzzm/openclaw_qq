@@ -4016,6 +4016,26 @@ ${current}
                             mentionedByReply = true;
                         }
                         if (!mentionedByAt && !mentionedByReply) return;
+                    } else if (checkMention) {
+                        // Observer mode (requireMention=false): still detect mentions so
+                        // mention-triggered replies can bypass the proactive-reply cooldown.
+                        const selfId = client.getSelfId();
+                        const effectiveSelfId = selfId ?? event.self_id;
+                        if (effectiveSelfId) {
+                            if (Array.isArray(event.message)) {
+                                for (const s of event.message) {
+                                    if (s.type === "at" && (String(s.data?.qq) === String(effectiveSelfId) || s.data?.qq === "all")) {
+                                        mentionedByAt = true;
+                                        break;
+                                    }
+                                }
+                            } else if (text.includes(`[CQ:at,qq=${effectiveSelfId}]`)) {
+                                mentionedByAt = true;
+                            }
+                            if (!mentionedByAt && repliedMsg?.sender?.user_id === effectiveSelfId) {
+                                mentionedByReply = true;
+                            }
+                        }
                     }
 
                     // adminOnlyChat gates direct messages only; group/guild chats are already
