@@ -4316,7 +4316,7 @@ ${current}
                                     if (fwdBody) {
                                         sawReplyContent = true;
                                         deliveredAnything = true;
-                                        client.sendGroupMsg(parseInt(lurkForwardTarget, 10), `📡 潜伏群播报：\n${fwdBody}`);
+                                        client.sendGroupMsg(parseInt(lurkForwardTarget, 10), fwdBody);
                                         console.log(`[QQ] lurk forward delivered (original relay) lurk=${groupId} target=${lurkForwardTarget} images=${imageHints.length} videos=${videoHints.length}`);
                                     }
                                     return;
