@@ -3997,8 +3997,12 @@ ${current}
                     let mentionedByReply = false;
 
                     const checkMention = isGroup || isGuild;
+                    // Per-group override: groups listed in mentionOnlyGroups always require an
+                    // @/reply/keyword trigger even when the channel runs in observer mode.
+                    const mentionOnlyGroupIds = [...new Set(parseIdListInput(config.mentionOnlyGroups as string | number | Array<string | number> | undefined))];
+                    const requireMentionEffective = Boolean(config.requireMention) || (isGroup && groupId !== undefined && mentionOnlyGroupIds.includes(groupId));
                     if (keywordOnlyTrigger && !isTriggered) return;
-                    if (checkMention && config.requireMention && !keywordOnlyTrigger && !isTriggered) {
+                    if (checkMention && requireMentionEffective && !keywordOnlyTrigger && !isTriggered) {
                         const selfId = client.getSelfId();
                         const effectiveSelfId = selfId ?? event.self_id;
                         if (!effectiveSelfId) return;
