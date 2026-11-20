@@ -4315,6 +4315,11 @@ ${current}
                         scheduleUnknownFlush();
                     };
 
+                    // Media snapshot for lurk relay: refreshed from the merged dispatch context so
+                    // batched messages (long debounce windows) relay the right images/videos, not
+                    // just the first message's closure hints.
+                    let lurkRelayMedia = { images: [] as string[], videos: [] as string[] };
+
                     const deliver = async (payload: any, info?: { kind?: string }) => {
                         if (currentRunState?.isStale()) return;
                         const isTextFailure = payload.text && (
@@ -4339,12 +4344,14 @@ ${current}
                                 const rawTrimmed = payload.text.trim();
                                 const usedMarker = fwdMarkers.find((m) => rawTrimmed.startsWith(m));
                                 if (usedMarker && lurkForwardTargets.length > 0) {
-                                    // Relay the ORIGINAL inbound content verbatim: text as-is plus
-                                    // native image/video CQ codes built from the real message URLs. The
-                                    // model only judged "interesting or not"; it never rewrites.
-                                    const imageCodes = imageHints.slice(0, 5).map((u) => `[CQ:image,file=${u}]`).join("\n");
-                                    const videoHints = fileHints.filter((h) => h.kind === "video" && h.url).slice(0, 1);
-                                    const videoCodes = videoHints.map((h) => `[CQ:video,file=${h.url}]`).join("\n");
+                                    // Relay the ORIGINAL inbound content verbatim: media CQ codes
+                                    // built from the merged dispatch snapshot (all batched messages).
+                                    const relayImages = (lurkRelayMedia.images.length > 0 ? lurkRelayMedia.images : imageHints).slice(0, 9);
+                                    const imageCodes = relayImages.map((u) => `[CQ:image,file=${u}]`).join("\n");
+                                    const videoUrls = lurkRelayMedia.videos.length > 0
+                                        ? lurkRelayMedia.videos
+                                        : fileHints.filter((h) => h.kind === "video" && h.url).map((h) => h.url!);
+                                    const videoCodes = videoUrls.slice(0, 2).map((u) => `[CQ:video,file=${u}]`).join("\n");
                                     // Media-only relay: images/videos only, original text dropped.
                                     const fwdBody = [imageCodes, videoCodes].filter(Boolean).join("\n");
                                     if (fwdBody) {
@@ -4353,7 +4360,7 @@ ${current}
                                         for (const target of lurkForwardTargets) {
                                             client.sendGroupMsg(parseInt(target, 10), fwdBody);
                                         }
-                                        console.log(`[QQ] lurk forward delivered (original relay) lurk=${groupId} targets=${lurkForwardTargets.join(",")} images=${imageHints.length} videos=${videoHints.length}`);
+                                        console.log(`[QQ] lurk forward delivered (original relay) lurk=${groupId} targets=${lurkForwardTargets.join(",")} images=${relayImages.length} videos=${videoUrls.length}`);
                                     }
                                     return;
                                 }
@@ -4581,6 +4588,25 @@ ${current}
                     });
 
                     const executeDispatch = async (mergedCtx: any, runState: { isStale: () => boolean }) => {
+                        // Refresh the lurk relay media snapshot from the merged context so batched
+                        // messages relay their own images/videos.
+                        {
+                            const mediaUrls: string[] = Array.isArray(mergedCtx?.MediaUrls)
+                                ? mergedCtx.MediaUrls.filter((u: unknown) => typeof u === "string" && /^https?:\/\//.test(u))
+                                : (typeof mergedCtx?.MediaUrl === "string" && /^https?:\/\//.test(mergedCtx.MediaUrl) ? [mergedCtx.MediaUrl] : []);
+                            const bodyTexts = [mergedCtx?.Body, mergedCtx?.RawBody].filter((v: unknown) => typeof v === "string").join("\n");
+                            const videoUrls: string[] = [];
+                            const videoRe = /\[视频[:：]\s*(https?:\/\/[^\]\s]+)\]/g;
+                            let vm: RegExpExecArray | null;
+                            while ((vm = videoRe.exec(bodyTexts)) !== null) videoUrls.push(vm[1]);
+                            const imageUrls: string[] = [...mediaUrls];
+                            const imgRe = /\[图片[:：]\s*(https?:\/\/[^\]\s]+)\]/g;
+                            let im: RegExpExecArray | null;
+                            while ((im = imgRe.exec(bodyTexts)) !== null) {
+                                if (!imageUrls.includes(im[1])) imageUrls.push(im[1]);
+                            }
+                            lurkRelayMedia = { images: [...new Set(imageUrls)], videos: [...new Set(videoUrls)] };
+                        }
                         currentRunState = runState;
                         let processingDelayTimer: ReturnType<typeof setTimeout> | null = null;
                         let typingCardActivated = false;
@@ -4827,10 +4853,14 @@ ${current}
                         }
                     }
 
+                    const isLurkGroup = isGroup && groupId !== undefined && lurkGroupIds.includes(groupId);
+                    const effectiveConfig = isLurkGroup && Number(config.lurkQueueDebounceMs || 0) > 0
+                        ? { ...config, queueDebounceMs: Number(config.lurkQueueDebounceMs) }
+                        : config;
                     enqueueQQMessageForDispatch(
                         route.sessionKey,
                         { ctxPayload, executeDispatch, runEpoch: 0 },
-                        config,
+                        effectiveConfig,
                         (msg: string) => {
                             if (isGroup) client.sendGroupMsg(groupId, msg);
                             else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, msg);
