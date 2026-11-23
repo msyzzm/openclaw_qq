@@ -1,7 +1,8 @@
 import { promises as fs, constants as fsConstants } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { homedir } from "node:os";
+import { homedir, networkInterfaces } from "node:os";
+import * as http from "node:http";
 import { execFile as execFileCallback } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -2430,6 +2431,433 @@ async function uploadFileToTarget(
     return { ok: false, error: `File upload unsupported for target: ${to}` };
 }
 
+// ---------------------------------------------------------------------------
+// External send-API: let other services push a file through the bot into a group.
+//
+//   POST /send?group=<gid>&type=<image|video|record|file|auto>&filename=<name>&text=<caption>
+//     - raw body = file bytes (any content-type except application/json)
+//     - or JSON body: {"group":123,"type":"image","filename":"a.png","text":"hi","fileBase64":"..."}
+//   Auth (when apiToken configured): Authorization: Bearer <token> | X-Token: <token> | ?token=
+//   GET /health — liveness probe
+//   GET /f/<nonce>/<filename> — internal: lets the NapCat container pull uploaded
+//     bytes over HTTP (used as upload_group_file source instead of giant base64 WS frames).
+// ---------------------------------------------------------------------------
+interface QQApiRuntimeConfig {
+    accountId: string;
+    listenHost: string;
+    port: number;
+    token: string;
+    allowedGroups: Set<string>;
+    maxBodyBytes: number;
+    publicBaseUrl: string;
+}
+
+class QQApiBodyTooLargeError extends Error { }
+
+let qqApiHttpServer: http.Server | null = null;
+let qqApiHttpServerAccount: string | null = null;
+let qqApiHttpServerPort = 0;
+let qqApiRuntimeConfig: QQApiRuntimeConfig | null = null;
+const qqApiFileCache = new Map<string, { buffer: Buffer; filename: string; contentType: string; expiresAt: number }>();
+let qqApiFileCacheTimer: NodeJS.Timeout | null = null;
+const QQ_API_FILE_TTL_MS = 15 * 60 * 1000;
+
+const API_IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "heic", "avif", "jfif", "tiff", "tif"]);
+const API_VIDEO_EXTS = new Set(["mp4", "mov", "mkv", "avi", "flv", "wmv", "m4v", "ts", "webm", "3gp", "mpeg", "mpg"]);
+const API_AUDIO_EXTS = new Set(["mp3", "wav", "flac", "m4a", "aac", "ogg", "opus", "amr", "silk", "wma"]);
+const API_VIDEO_EXT_TO_MIME = new Map<string, string>([
+    [".mp4", "video/mp4"],
+    [".mov", "video/quicktime"],
+    [".mkv", "video/x-matroska"],
+    [".webm", "video/webm"],
+    [".avi", "video/x-msvideo"],
+    [".flv", "video/x-flv"],
+    [".m4v", "video/x-m4v"],
+    [".ts", "video/mp2t"],
+    [".3gp", "video/3gpp"],
+]);
+const API_AUDIO_EXT_TO_MIME = new Map<string, string>([
+    [".mp3", "audio/mpeg"],
+    [".wav", "audio/wav"],
+    [".flac", "audio/flac"],
+    [".m4a", "audio/mp4"],
+    [".aac", "audio/aac"],
+    [".ogg", "audio/ogg"],
+    [".opus", "audio/opus"],
+    [".amr", "audio/amr"],
+]);
+
+function apiContentTypeFor(filename: string): string {
+    const ext = path.extname(filename || "").toLowerCase();
+    const imageMime = IMAGE_EXT_TO_MIME.get(ext);
+    if (imageMime) return imageMime;
+    return API_VIDEO_EXT_TO_MIME.get(ext)
+        || API_AUDIO_EXT_TO_MIME.get(ext)
+        || "application/octet-stream";
+}
+
+function apiDetectSendType(filename: string, contentType: string): "image" | "video" | "record" | "file" {
+    const ext = path.extname(filename || "").replace(/^\./, "").toLowerCase();
+    if (API_IMAGE_EXTS.has(ext)) return "image";
+    if (API_VIDEO_EXTS.has(ext)) return "video";
+    if (API_AUDIO_EXTS.has(ext)) return "record";
+    const mime = String(contentType || "").split(";")[0].trim().toLowerCase();
+    if (mime.startsWith("image/")) return "image";
+    if (mime.startsWith("video/")) return "video";
+    if (mime.startsWith("audio/")) return "record";
+    return "file";
+}
+
+function apiDetectPublicBaseUrl(configuredBase: string, port: number): string {
+    const trimmed = (configuredBase || "").trim().replace(/\/+$/, "");
+    if (trimmed) return trimmed;
+    try {
+        const ifaces = networkInterfaces();
+        for (const [name, addrs] of Object.entries(ifaces)) {
+            if (!addrs || !/docker/i.test(name)) continue;
+            for (const addr of addrs) {
+                if (addr.family === "IPv4" && !addr.internal) return `http://${addr.address}:${port}`;
+            }
+        }
+    } catch { }
+    return "";
+}
+
+function apiSendJson(res: http.ServerResponse, status: number, payload: unknown): void {
+    const body = JSON.stringify(payload);
+    res.writeHead(status, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Token, X-Filename",
+    });
+    res.end(body);
+}
+
+function apiExtractToken(req: http.IncomingMessage, url: URL): string | null {
+    const auth = req.headers["authorization"];
+    if (typeof auth === "string" && /^Bearer\s+/i.test(auth)) return auth.replace(/^Bearer\s+/i, "").trim();
+    const xToken = req.headers["x-token"];
+    if (typeof xToken === "string" && xToken.trim()) return xToken.trim();
+    const qToken = url.searchParams.get("token");
+    if (qToken && qToken.trim()) return qToken.trim();
+    return null;
+}
+
+function apiReadBody(req: http.IncomingMessage, maxBytes: number): Promise<Buffer> {
+    return new Promise<Buffer>((resolve, reject) => {
+        const chunks: Buffer[] = [];
+        let total = 0;
+        let settled = false;
+        req.on("data", (chunk: Buffer) => {
+            if (settled) return;
+            total += chunk.length;
+            if (total > maxBytes) {
+                settled = true;
+                reject(new QQApiBodyTooLargeError(`body exceeds ${maxBytes} bytes`));
+                req.destroy();
+                return;
+            }
+            chunks.push(chunk);
+        });
+        req.on("end", () => {
+            if (settled) return;
+            settled = true;
+            resolve(Buffer.concat(chunks));
+        });
+        req.on("error", (err) => {
+            if (settled) return;
+            settled = true;
+            reject(err);
+        });
+    });
+}
+
+function apiServeFileLater(data: Buffer, filename: string): string {
+    const nonce = createHash("sha256")
+        .update(`${Date.now()}:${Math.random()}:${filename}:${data.length}`)
+        .digest("hex")
+        .slice(0, 24);
+    qqApiFileCache.set(nonce, {
+        buffer: data,
+        filename,
+        contentType: apiContentTypeFor(filename),
+        expiresAt: Date.now() + QQ_API_FILE_TTL_MS,
+    });
+    if (!qqApiFileCacheTimer) {
+        qqApiFileCacheTimer = setInterval(() => {
+            const now = Date.now();
+            for (const [key, entry] of qqApiFileCache) {
+                if (entry.expiresAt < now) qqApiFileCache.delete(key);
+            }
+            if (qqApiFileCache.size === 0 && qqApiFileCacheTimer) {
+                clearInterval(qqApiFileCacheTimer);
+                qqApiFileCacheTimer = null;
+            }
+        }, 60 * 1000);
+        if (typeof qqApiFileCacheTimer.unref === "function") qqApiFileCacheTimer.unref();
+    }
+    return nonce;
+}
+
+async function apiSendFileToGroup(
+    client: AnyQQClient,
+    groupId: number,
+    kind: "image" | "video" | "record" | "file",
+    data: Buffer,
+    filename: string,
+    caption: string,
+    publicBaseUrl: string,
+): Promise<{ ok: boolean; messageId?: any; error?: string; transport?: string }> {
+    if (kind === "file") {
+        // upload_group_file: prefer a served URL when possible — NapCat then streams the
+        // bytes from us instead of receiving a giant base64 blob over the WebSocket.
+        let urlError: string | null = null;
+        if (publicBaseUrl) {
+            const nonce = apiServeFileLater(data, filename);
+            const fetchUrl = `${publicBaseUrl}/f/${nonce}/${encodeURIComponent(filename)}`;
+            try {
+                const result = await (client as any).sendWithResponse("upload_group_file", {
+                    group_id: groupId,
+                    file: fetchUrl,
+                    name: filename,
+                }, 180000);
+                return { ok: true, messageId: result?.message_id ?? result?.file_id ?? null, transport: "url" };
+            } catch (err) {
+                urlError = String(err);
+                console.warn(`[QQ-API] upload_group_file via URL failed, falling back to base64: ${urlError}`);
+            }
+        }
+        try {
+            const result = await (client as any).sendWithResponse("upload_group_file", {
+                group_id: groupId,
+                file: `base64://${data.toString("base64")}`,
+                name: filename,
+            }, 180000);
+            return { ok: true, messageId: result?.message_id ?? null, transport: "base64" };
+        } catch (err) {
+            return { ok: false, error: [urlError, String(err)].filter(Boolean).join(" | ") };
+        }
+    }
+
+    // image / video / record: send as message segments (text caption first if present)
+    const segments: any[] = [];
+    if (caption.trim()) segments.push({ type: "text", data: { text: caption } });
+    segments.push({ type: kind, data: { file: `base64://${data.toString("base64")}` } });
+    const timeoutMs = kind === "video" ? 180000 : 120000;
+    try {
+        const result = await (client as any).sendWithResponse("send_group_msg", {
+            group_id: groupId,
+            message: segments,
+        }, timeoutMs);
+        return { ok: true, messageId: result?.message_id ?? null, transport: kind };
+    } catch (err) {
+        return { ok: false, error: String(err) };
+    }
+}
+
+async function handleQQApiRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const cfg = qqApiRuntimeConfig;
+    if (!cfg) {
+        apiSendJson(res, 503, { ok: false, error: "send API is shutting down" });
+        return;
+    }
+    const url = new URL(req.url || "/", "http://localhost");
+    const pathname = url.pathname.replace(/\/+$/, "") || "/";
+
+    if (req.method === "OPTIONS") {
+        res.writeHead(204, {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Token, X-Filename",
+        });
+        res.end();
+        return;
+    }
+
+    if (req.method === "GET" && (pathname === "/health" || pathname === "/")) {
+        apiSendJson(res, 200, { ok: true, service: "openclaw-qq-api", account: cfg.accountId });
+        return;
+    }
+
+    if (req.method === "GET" && pathname.startsWith("/f/")) {
+        const parts = pathname.split("/").filter(Boolean); // ["f", nonce, ...name]
+        const nonce = parts[1] || "";
+        const entry = qqApiFileCache.get(nonce);
+        if (!entry) {
+            apiSendJson(res, 404, { ok: false, error: "file expired or not found" });
+            return;
+        }
+        res.writeHead(200, {
+            "Content-Type": entry.contentType,
+            "Content-Length": entry.buffer.length,
+            "Access-Control-Allow-Origin": "*",
+        });
+        res.end(entry.buffer);
+        return;
+    }
+
+    if (req.method === "POST" && (pathname === "/send" || pathname === "/api/send")) {
+        if (cfg.token) {
+            const presented = apiExtractToken(req, url);
+            if (presented !== cfg.token) {
+                apiSendJson(res, 401, { ok: false, error: "unauthorized" });
+                return;
+            }
+        }
+
+        const contentType = String(req.headers["content-type"] || "");
+        let groupRaw = (url.searchParams.get("group") || url.searchParams.get("group_id") || "").trim();
+        let typeParam = (url.searchParams.get("type") || "").trim().toLowerCase();
+        let filename = (
+            url.searchParams.get("filename")
+            || (typeof req.headers["x-filename"] === "string" ? req.headers["x-filename"] : "")
+            || ""
+        ).trim();
+        let caption = url.searchParams.get("text") || url.searchParams.get("caption") || "";
+        let data: Buffer;
+
+        try {
+            if (contentType.toLowerCase().includes("application/json")) {
+                const body = await apiReadBody(req, cfg.maxBodyBytes * 2 + 65536);
+                let parsed: any;
+                try {
+                    parsed = JSON.parse(body.toString("utf8"));
+                } catch {
+                    apiSendJson(res, 400, { ok: false, error: "invalid JSON body" });
+                    return;
+                }
+                groupRaw = String(parsed?.group ?? parsed?.group_id ?? groupRaw).trim();
+                typeParam = String(parsed?.type ?? typeParam).trim().toLowerCase();
+                filename = sanitizeQQFileName(filename || String(parsed?.filename ?? parsed?.name ?? ""));
+                caption = caption || String(parsed?.text ?? parsed?.caption ?? "");
+                const b64 = String(parsed?.fileBase64 ?? parsed?.file_base64 ?? parsed?.data ?? "");
+                data = Buffer.from(b64, "base64");
+                if (data.length === 0) {
+                    apiSendJson(res, 400, { ok: false, error: "empty fileBase64" });
+                    return;
+                }
+                if (data.length > cfg.maxBodyBytes) throw new QQApiBodyTooLargeError(`file exceeds ${cfg.maxBodyBytes} bytes`);
+            } else {
+                data = await apiReadBody(req, cfg.maxBodyBytes);
+                if (data.length === 0) {
+                    apiSendJson(res, 400, { ok: false, error: "empty body" });
+                    return;
+                }
+                filename = sanitizeQQFileName(filename || `upload-${Date.now()}.bin`);
+            }
+        } catch (err) {
+            if (err instanceof QQApiBodyTooLargeError) {
+                apiSendJson(res, 413, { ok: false, error: err.message });
+                return;
+            }
+            apiSendJson(res, 400, { ok: false, error: String(err) });
+            return;
+        }
+
+        if (!/^\d{5,12}$/.test(groupRaw)) {
+            apiSendJson(res, 400, { ok: false, error: "missing or invalid `group` (digits only)" });
+            return;
+        }
+        if (cfg.allowedGroups.size > 0 && !cfg.allowedGroups.has(groupRaw)) {
+            apiSendJson(res, 403, { ok: false, error: `group ${groupRaw} is not in apiAllowedGroups` });
+            return;
+        }
+
+        let kind: "image" | "video" | "record" | "file";
+        if (!typeParam || typeParam === "auto") {
+            kind = apiDetectSendType(filename, contentType);
+        } else if (typeParam === "image" || typeParam === "video" || typeParam === "record" || typeParam === "file") {
+            kind = typeParam;
+        } else {
+            apiSendJson(res, 400, { ok: false, error: "invalid `type` (image|video|record|file|auto)" });
+            return;
+        }
+
+        const client = clients.get(cfg.accountId);
+        if (!client || !client.isConnected()) {
+            apiSendJson(res, 503, { ok: false, error: "QQ client not connected" });
+            return;
+        }
+
+        const groupId = Number(groupRaw);
+        console.log(`[QQ-API] send group=${groupId} type=${kind} file=${filename} size=${data.length} caption=${caption ? "yes" : "no"}`);
+        const result = await apiSendFileToGroup(client, groupId, kind, data, filename, caption, cfg.publicBaseUrl);
+        if (result.ok) {
+            console.log(`[QQ-API] delivered group=${groupId} type=${kind} transport=${result.transport ?? "-"}`);
+            apiSendJson(res, 200, {
+                ok: true,
+                group: groupRaw,
+                type: kind,
+                filename,
+                transport: result.transport ?? null,
+                messageId: result.messageId ?? null,
+            });
+        } else {
+            console.warn(`[QQ-API] send failed group=${groupId} type=${kind}: ${result.error}`);
+            apiSendJson(res, 502, { ok: false, error: result.error || "send failed" });
+        }
+        return;
+    }
+
+    apiSendJson(res, 404, {
+        ok: false,
+        error: "not found. Use POST /send?group=<gid>&type=<image|video|record|file|auto>&filename=<name>",
+    });
+}
+
+async function startQQApiServer(opts: {
+    accountId: string;
+    listenHost: string;
+    port: number;
+    token: string;
+    allowedGroups: Set<string>;
+    maxBodyBytes: number;
+    publicBaseUrl: string;
+}): Promise<void> {
+    const listenHost = opts.listenHost || "0.0.0.0";
+    const publicBaseUrl = apiDetectPublicBaseUrl(opts.publicBaseUrl, opts.port);
+    if (qqApiHttpServer) {
+        // Account restarted in-process: reuse the listener, just refresh routing state.
+        qqApiRuntimeConfig = { ...opts, listenHost, publicBaseUrl };
+        qqApiHttpServerAccount = opts.accountId;
+        console.log(`[QQ-API] reusing listener on port ${qqApiHttpServerPort} for account ${opts.accountId}`);
+        return;
+    }
+    const server = http.createServer((req, res) => {
+        void handleQQApiRequest(req, res).catch((err) => {
+            console.error(`[QQ-API] request handler error: ${String(err)}`);
+            try { apiSendJson(res, 500, { ok: false, error: String(err) }); } catch { }
+        });
+    });
+    await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(opts.port, listenHost, () => resolve());
+    });
+    qqApiHttpServer = server;
+    qqApiHttpServerAccount = opts.accountId;
+    qqApiHttpServerPort = opts.port;
+    qqApiRuntimeConfig = { ...opts, listenHost, publicBaseUrl };
+    console.log(
+        `[QQ-API] listening on ${listenHost}:${opts.port}`
+        + ` (publicBase=${publicBaseUrl || "none"}, auth=${opts.token ? "token" : "open"}, allowedGroups=${opts.allowedGroups.size || "any"})`
+    );
+}
+
+async function stopQQApiServer(accountId: string): Promise<void> {
+    if (!qqApiHttpServer || qqApiHttpServerAccount !== accountId) return;
+    const server = qqApiHttpServer;
+    qqApiHttpServer = null;
+    qqApiHttpServerAccount = null;
+    qqApiRuntimeConfig = null;
+    qqApiFileCache.clear();
+    await new Promise<void>((resolve) => {
+        server.close(() => resolve());
+        setTimeout(resolve, 2000).unref?.();
+    });
+    console.log(`[QQ-API] stopped (${accountId})`);
+}
+
 async function findRecentAudioFallback(preferredExt?: string): Promise<string | null> {
     const home = process.env.HOME;
     if (!home) return null;
@@ -3303,6 +3731,26 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
                 .filter(Boolean);
             // Publish for module-level guards (channel outbound choke point, typing presence).
             activeLurkGroupIds = new Set(lurkGroupIds);
+            // External send-API (onebot only: it drives OneBot actions directly).
+            if (config.apiEnabled && config.protocol !== "milky") {
+                try {
+                    const apiPort = Math.max(1, Math.floor(Number(config.apiPort ?? 7600) || 7600));
+                    await startQQApiServer({
+                        accountId: account.accountId,
+                        listenHost: String(config.apiListenHost || "0.0.0.0"),
+                        port: apiPort,
+                        token: String(config.apiToken || "").trim(),
+                        allowedGroups: new Set(
+                            parseIdListInput(config.apiAllowedGroups as string | number | Array<string | number> | undefined)
+                                .map((id) => String(id))
+                        ),
+                        maxBodyBytes: Math.max(1, Math.floor(Number(config.apiMaxBodyMb ?? 100) || 100)) * 1024 * 1024,
+                        publicBaseUrl: String(config.apiPublicBaseUrl || "").trim(),
+                    });
+                } catch (err) {
+                    console.warn(`[QQ-API] failed to start: ${String(err)}`);
+                }
+            }
             const allowedGroupIds = [...new Set(parseIdListInput(config.allowedGroups as string | number | Array<string | number> | undefined))];
             const blockedUserIds = [...new Set(parseIdListInput(config.blockedUsers as string | number | Array<string | number> | undefined))];
             const blockedNotifyCooldownMs = Math.max(0, Number(config.blockedNotifyCooldownMs ?? 10000));
@@ -4889,6 +5337,11 @@ ${current}
             } finally {
                 if (accountStartGeneration.get(account.accountId) === accountGen) {
                     accountStartGeneration.set(account.accountId, accountGen + 1);
+                }
+                // Only tear the send-API down when this run wasn't superseded by a newer
+                // start (a newer run may have rebound the shared listener).
+                if (accountStartGeneration.get(account.accountId) === accountGen + 1) {
+                    await stopQQApiServer(account.accountId);
                 }
                 client.disconnect();
                 clients.delete(account.accountId);

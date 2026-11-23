@@ -134,6 +134,13 @@ export const QQConfigSchema = z.object({
   forwardLongReplyThreshold: NumberInputSchema(300).describe("final_answer 长回复自动转为 QQ 合并转发的阈值（字符数）。默认 300；commentary 仍按普通消息发送。"),
   forwardNodeCharLimit: NumberInputSchema(0).describe("启用长回复合并转发时，每个转发节点的最大字符数。默认 0，表示不按长度拆节点；同一轮回复的多条 assistant message 会尽量合并进一个转发。"),
   forwardNodeName: z.preprocess((value) => normalizeLooseString(value), z.string().optional().default("OpenClaw")).describe("启用长回复合并转发时，节点显示昵称。默认 OpenClaw。"),
+  apiEnabled: BooleanInputSchema(true).describe("是否启用外部发送 API（HTTP）。开启后外部服务可 POST http://<host>:<port>/send?group=<群号> 让机器人把文件发到指定群。默认开启（仅 onebot 协议）。"),
+  apiListenHost: z.preprocess((value) => normalizeLooseString(value), z.string().optional().default("0.0.0.0")).describe("外部发送 API 监听地址。默认 0.0.0.0（局域网可访问）；只允许本机调用时改 127.0.0.1。"),
+  apiPort: NumberInputSchema(7600).describe("外部发送 API 端口。默认 7600。"),
+  apiToken: z.preprocess((value) => normalizeLooseString(value), z.string().optional().default("")).describe("外部发送 API 访问令牌。留空=不鉴权（仅建议可信内网使用）。调用时用 Authorization: Bearer <token> 或 ?token= 传递。"),
+  apiAllowedGroups: IdListStringSchema.describe("外部发送 API 允许的目标群号白名单。留空=允许任意群号。Raw JSON 填：\"960758971,472992643\"。"),
+  apiMaxBodyMb: NumberInputSchema(100).describe("外部发送 API 单次上传体积上限（MB）。默认 100。"),
+  apiPublicBaseUrl: z.preprocess((value) => normalizeLooseString(value), z.string().optional().default("")).describe("供 NapCat 容器回源下载文件的基准 URL（用于群文件上传）。留空=自动探测 docker 网桥地址，如 http://172.17.0.1:7600。"),
 }).passthrough();
 
 export type QQConfig = z.infer<typeof QQConfigSchema>;
